@@ -1,0 +1,13 @@
+{
+  "name": "makan",
+  "type": "module",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "npm run build --prefix client",
+    "start": "node server/index.js",
+    "start:watch": "node scripts/run.js",
+    "daemon": "node scripts/run.js",
+    "setup": "npm install --prefix server && npm install --prefix client && npm run build"
+  }
+}

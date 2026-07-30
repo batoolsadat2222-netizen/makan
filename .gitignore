@@ -1,0 +1,12 @@
+node_modules/
+.env
+dist/
+*.log
+.makan.pid
+*.traineddata
+server/eng.traineddata
+server/fas.traineddata
+# داده‌های runtime (نه کتاب درسی)
+server/store/users.json
+server/store/analytics.json
+server/store/messages.json

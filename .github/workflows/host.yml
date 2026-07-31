@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -49,39 +49,49 @@ jobs:
           tail -n 100 server.log || true
           exit 1
 
-      - name: Install cloudflared
+      - name: Public tunnel and keep alive
         run: |
-          curl -fsSL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared
+          set -e
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
+            -R 80:127.0.0.1:8080 nokey@localhost.run > tunnel.log 2>&1 &
+          SSH_PID=$!
 
-      - name: Public tunnel URL
-        id: tunnel
-        run: |
-          ./cloudflared tunnel --url http://127.0.0.1:8080 > tunnel.log 2>&1 &
-          for i in $(seq 1 40); do
-            URL=$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' tunnel.log | head -n 1 || true)
+          URL=""
+          for i in $(seq 1 45); do
+            URL=$(grep -Eo 'https://[a-zA-Z0-9.-]+\.(lhr\.life|localhost\.run)' tunnel.log | head -n 1 || true)
             if [ -n "$URL" ]; then
-              echo "url=$URL" >> "$GITHUB_OUTPUT"
-              echo "PUBLIC_URL=$URL"
-              echo "$URL" > public-url.txt
-              echo "## ماکان آنلاین" >> "$GITHUB_STEP_SUMMARY"
-              echo "" >> "$GITHUB_STEP_SUMMARY"
-              echo "لینک مستقیم: $URL" >> "$GITHUB_STEP_SUMMARY"
               break
+            fi
+            if ! kill -0 "$SSH_PID" 2>/dev/null; then
+              echo "ssh tunnel exited early"
+              cat tunnel.log || true
+              exit 1
             fi
             sleep 2
           done
-          if [ ! -f public-url.txt ]; then
+
+          if [ -z "$URL" ]; then
             echo "tunnel URL not found"
             cat tunnel.log || true
             exit 1
           fi
 
-      - name: Upload public URL
-        uses: actions/upload-artifact@v4
-        with:
-          name: makan-public-url
-          path: public-url.txt
+          echo "PUBLIC_URL=$URL"
+          echo "$URL" > LIVE_URL.txt
+          echo "## ماکان آنلاین" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "لینک مستقیم: $URL" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Keep alive
-        run: sleep 330m
+          git config user.name "makan-bot"
+          git config user.email "makan-bot@users.noreply.github.com"
+          git add LIVE_URL.txt
+          git commit -m "Update live URL" || true
+          git push origin HEAD:live-url --force || true
+
+          # نگه داشتن تونل تا سقف تایم‌اوت جاب
+          while kill -0 "$SSH_PID" 2>/dev/null; do
+            sleep 60
+          done
+          echo "tunnel process ended"
+          cat tunnel.log || true
+          exit 1

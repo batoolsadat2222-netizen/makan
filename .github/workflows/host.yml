@@ -1,0 +1,77 @@
+name: Host Makan
+
+on:
+  workflow_dispatch:
+  schedule:
+    # هر ۵ ساعت یک‌بار ری‌استارت تا لینک زنده بماند
+    - cron: "0 */5 * * *"
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+
+      - name: Install and build
+        run: npm run setup
+
+      - name: Start server
+        env:
+          NODE_ENV: production
+          HOST: 0.0.0.0
+          PORT: "8080"
+          GROQ_DISABLED: "true"
+          OLLAMA_DISABLED: "true"
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+        run: |
+          nohup node server/index.js > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:8080/api/health" >/dev/null; then
+              echo "server ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "server failed to start"
+          tail -n 100 server.log || true
+          exit 1
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+
+      - name: Public tunnel
+        id: tunnel
+        run: |
+          ./cloudflared tunnel --url http://127.0.0.1:8080 > tunnel.log 2>&1 &
+          for i in $(seq 1 40); do
+            URL=$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' tunnel.log | head -n 1 || true)
+            if [ -n "$URL" ]; then
+              echo "url=$URL" >> "$GITHUB_OUTPUT"
+              echo "PUBLIC_URL=$URL"
+              echo "$URL" > public-url.txt
+              break
+            fi
+            sleep 2
+          done
+          if [ ! -f public-url.txt ]; then
+            echo "tunnel URL not found"
+            cat tunnel.log || true
+            exit 1
+          fi
+          # نگه داشتن جاب تا سقف تایم‌اوت
+          sleep 330m

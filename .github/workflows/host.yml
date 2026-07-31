@@ -58,7 +58,7 @@ jobs:
 
           URL=""
           for i in $(seq 1 45); do
-            URL=$(grep -Eo 'https://[a-zA-Z0-9.-]+\.(lhr\.life|localhost\.run)' tunnel.log | head -n 1 || true)
+            URL=$(grep -Eo 'https://[a-zA-Z0-9-]+\.lhr\.life' tunnel.log | head -n 1 || true)
             if [ -n "$URL" ]; then
               break
             fi

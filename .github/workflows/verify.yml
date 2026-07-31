@@ -1,0 +1,24 @@
+name: Deploy hint
+
+# این workflow فقط وضعیت پروژه را چک می‌کند.
+# برای انتشار واقعی از Render Blueprint استفاده کن:
+# https://render.com/deploy?repo=https://github.com/batoolsadat2222-netizen/makan
+
+on:
+  workflow_dispatch:
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install & build
+        run: npm run setup
+      - name: Check server boots
+        run: |
+          node server/index.js &
+          sleep 5
+          curl -fsS http://127.0.0.1:8080/api/health

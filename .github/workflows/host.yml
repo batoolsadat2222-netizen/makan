@@ -52,18 +52,17 @@ jobs:
       - name: Public tunnel and keep alive
         run: |
           set -e
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
-            -R 80:127.0.0.1:8080 nokey@localhost.run > tunnel.log 2>&1 &
-          SSH_PID=$!
+          npx --yes localtunnel --port 8080 > tunnel.log 2>&1 &
+          LT_PID=$!
 
           URL=""
-          for i in $(seq 1 45); do
-            URL=$(grep -Eo 'https://[a-zA-Z0-9-]+\.lhr\.life' tunnel.log | head -n 1 || true)
+          for i in $(seq 1 60); do
+            URL=$(grep -Eo 'https://[a-zA-Z0-9.-]+\.loca\.lt' tunnel.log | head -n 1 || true)
             if [ -n "$URL" ]; then
               break
             fi
-            if ! kill -0 "$SSH_PID" 2>/dev/null; then
-              echo "ssh tunnel exited early"
+            if ! kill -0 "$LT_PID" 2>/dev/null; then
+              echo "localtunnel exited early"
               cat tunnel.log || true
               exit 1
             fi
@@ -88,8 +87,7 @@ jobs:
           git commit -m "Update live URL" || true
           git push origin HEAD:live-url --force || true
 
-          # نگه داشتن تونل تا سقف تایم‌اوت جاب
-          while kill -0 "$SSH_PID" 2>/dev/null; do
+          while kill -0 "$LT_PID" 2>/dev/null; do
             sleep 60
           done
           echo "tunnel process ended"

@@ -54,7 +54,7 @@ jobs:
           curl -fsSL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
           chmod +x cloudflared
 
-      - name: Public tunnel
+      - name: Public tunnel URL
         id: tunnel
         run: |
           ./cloudflared tunnel --url http://127.0.0.1:8080 > tunnel.log 2>&1 &
@@ -64,6 +64,9 @@ jobs:
               echo "url=$URL" >> "$GITHUB_OUTPUT"
               echo "PUBLIC_URL=$URL"
               echo "$URL" > public-url.txt
+              echo "## ماکان آنلاین" >> "$GITHUB_STEP_SUMMARY"
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "لینک مستقیم: $URL" >> "$GITHUB_STEP_SUMMARY"
               break
             fi
             sleep 2
@@ -73,5 +76,12 @@ jobs:
             cat tunnel.log || true
             exit 1
           fi
-          # نگه داشتن جاب تا سقف تایم‌اوت
-          sleep 330m
+
+      - name: Upload public URL
+        uses: actions/upload-artifact@v4
+        with:
+          name: makan-public-url
+          path: public-url.txt
+
+      - name: Keep alive
+        run: sleep 330m

@@ -3,13 +3,15 @@ import { trySolveMath } from './localSolver.js';
 import { askLocalTutor } from './localTutor.js';
 import { askGroq, streamGroq, isValidGroqKey } from './groq.js';
 import { askGemini, streamGemini, isValidGeminiKey } from './gemini.js';
-import { askOllama, streamOllama, isOllamaAvailable } from './ollama.js';
+import { askOllama, streamOllama, isOllamaAvailable, hasGoodPersianModel } from './ollama.js';
+import { askCompat, streamCompat, isCompatConfigured } from './openaiCompat.js';
 
 let cachedOllamaAvailable = null;
 let cachedOllamaAt = 0;
 let ollamaBlockedUntil = 0;
 let groqBlocked = false;
 let geminiBlockedUntil = 0;
+let compatBlockedUntil = 0;
 
 function envFlag(name) {
   return /^(1|true|yes)$/i.test((process.env[name] || '').trim());
@@ -29,7 +31,14 @@ function shouldTryGemini() {
   return isValidGeminiKey(cleanKey(process.env.GEMINI_API_KEY));
 }
 
-async function checkOllamaVision() {
+function shouldTryCompatSyncGate() {
+  if (Date.now() < compatBlockedUntil) return false;
+  if (envFlag('OPENAI_COMPAT_DISABLED')) return false;
+  return true;
+}
+
+async function checkOllama() {
+  if (envFlag('OLLAMA_DISABLED')) return false;
   if (Date.now() < ollamaBlockedUntil) return false;
   const now = Date.now();
   if (cachedOllamaAvailable !== null && now - cachedOllamaAt < 60_000) {
@@ -42,11 +51,22 @@ async function checkOllamaVision() {
 
 async function getProviderList(params = {}) {
   const providers = [];
-  if (shouldTryGemini()) providers.push('gemini');
+
+  if (shouldTryCompatSyncGate() && (await isCompatConfigured())) {
+    providers.push('compat');
+  }
+
+  // Gemini مستقیم از ایران معمولاً 403 — فقط اگر صریح فعال باشد
+  if (!envFlag('GEMINI_DISABLED') && shouldTryGemini()) providers.push('gemini');
   if (shouldTryGroq()) providers.push('groq');
-  // moondream برای برگه فارسی اغلب ناقص/غلط است — فقط وقتی OCR متن نداده
-  if (params.imageBase64 && !params.usedOcr && (await checkOllamaVision())) {
-    providers.push('ollama');
+
+  const ollamaOk = await checkOllama();
+  if (ollamaOk) {
+    if (params.imageBase64 && !params.usedOcr) {
+      providers.push('ollama');
+    } else if (await hasGoodPersianModel()) {
+      providers.push('ollama');
+    }
   }
   return providers;
 }
@@ -70,11 +90,21 @@ function normalizeParams(params) {
   };
 }
 
+function assertNotAborted(signal) {
+  if (signal?.aborted) {
+    const err = new Error('Request aborted');
+    err.name = 'AbortError';
+    throw err;
+  }
+}
+
 async function tryProvider(provider, params, stream = false) {
   const normalized = normalizeParams(params);
 
   if (stream) {
     switch (provider) {
+      case 'compat':
+        return { stream: streamCompat(normalized), provider: 'compat' };
       case 'groq':
         return { stream: streamGroq(normalized), provider: 'groq' };
       case 'gemini':
@@ -87,6 +117,8 @@ async function tryProvider(provider, params, stream = false) {
   }
 
   switch (provider) {
+    case 'compat':
+      return { answer: await askCompat(normalized), provider: 'compat' };
     case 'groq':
       return { answer: await askGroq(normalized), provider: 'groq' };
     case 'gemini':
@@ -99,14 +131,20 @@ async function tryProvider(provider, params, stream = false) {
 }
 
 function markProviderFailure(provider, error) {
+  if (error?.name === 'AbortError') return;
   console.error(`${provider} failed:`, error.message);
-  if (provider === 'gemini' && /403|blocked|fetch failed|timeout|Deadline|UNAVAILABLE|Forbidden/i.test(error.message || '')) {
-    geminiBlockedUntil = Date.now() + 10 * 60_000;
+  // timeout را مسدود نکن — فقط مسدودسازی واقعی/403
+  if (provider === 'gemini' && /403|blocked|Forbidden|UNAVAILABLE/i.test(error.message || '')) {
+    geminiBlockedUntil = Date.now() + 5 * 60_000;
     console.error('Gemini موقتاً غیرفعال شد (مسدود یا قطع شبکه)');
   }
   if (provider === 'groq' && (error.message?.includes('403') || error.status === 403)) {
     groqBlocked = true;
     console.error('Groq مسدود — از این به بعد رد می‌شود');
+  }
+  if (provider === 'compat' && /401|402|403|invalid_api_key|insufficient/i.test(error.message || '')) {
+    compatBlockedUntil = Date.now() + 10 * 60_000;
+    console.error('درگاه سازگار موقتاً غیرفعال شد');
   }
   if (provider === 'ollama' && /500|out of memory|OOM|allocate/i.test(error.message || '')) {
     ollamaBlockedUntil = Date.now() + 5 * 60_000;
@@ -115,51 +153,31 @@ function markProviderFailure(provider, error) {
   }
 }
 
-function localFallback(params) {
-  if (params.usedOcr || params.imageBase64) return null;
-
+function mathOnlyFallback(params) {
+  if (params.usedOcr || params.imageBase64 || params.handoutText?.trim()) return null;
   const solved = trySolveMath(params.text || '');
   if (solved) {
-    return { answer: solved.answer, mode: 'ai', provider: 'local' };
-  }
-
-  const tutor = askLocalTutor({
-    text: params.text || '',
-    subject: params.subject,
-    grade: params.grade,
-    usedOcr: false,
-  });
-  // دانش محلی درست را قبل از AI مسدود برگردان تا جواب غلط/تأخیر نیاید
-  if (tutor) {
-    return { answer: tutor.answer, mode: 'ai', provider: tutor.provider };
+    return { answer: solved.answer, mode: 'local', provider: 'local-math' };
   }
   return null;
 }
 
-function offlineFallback(params) {
-  // برگه عکس/OCR: همه سوالات را یکی‌یکی جواب بده
-  if (params.usedOcr || params.imageBase64) {
-    const sheet = askLocalTutor({
-      text: params.text || '',
-      subject: params.subject,
-      grade: params.grade,
-      usedOcr: true,
-    });
-    if (sheet) {
-      return { answer: sheet.answer, mode: 'ai', provider: sheet.provider || 'local-exam' };
-    }
-  }
-
+function localFallback(params) {
   const tutor = askLocalTutor({
     text: params.text || '',
     subject: params.subject,
     grade: params.grade,
-    usedOcr: false,
+    usedOcr: Boolean(params.usedOcr || params.imageBase64),
+    handoutText: params.handoutText || '',
   });
-  if (tutor) {
-    return { answer: tutor.answer, mode: 'ai', provider: tutor.provider };
+  if (tutor?.answer?.trim()) {
+    return { answer: tutor.answer, mode: 'local', provider: tutor.provider || 'local' };
   }
-  return null;
+  return mathOnlyFallback(params);
+}
+
+function offlineFallback(params) {
+  return localFallback(params);
 }
 
 async function* streamDemo(text) {
@@ -174,26 +192,22 @@ async function* yieldLocal(result) {
   for await (const chunk of streamDemo(result.answer)) {
     yield { type: 'chunk', text: chunk };
   }
-  yield { type: 'done', mode: result.mode || 'ai', provider: result.provider };
+  yield { type: 'done', mode: result.mode || 'local', provider: result.provider };
 }
 
 export async function askQuestion(params) {
-  const local = localFallback(params);
-  if (local && !params.imageBase64 && !params.usedOcr) {
-    return local;
-  }
+  // ریاضی خالص: سریع و دقیق
+  const math = mathOnlyFallback(params);
+  if (math) return math;
 
+  // اول AI واقعی (AvalAI/Ollama) — بعد دانش محلی
   const providers = await getProviderList(params);
-
   for (const provider of providers) {
     try {
       const { answer } = await tryProvider(provider, params, false);
-      // اگر مدل فقط یک پاسخ کوتاه کلی داد ولی OCR چند سوال دارد، پاسخ محلی چندسوالی را ترجیح بده
-      if (params.usedOcr && looksIncompleteForExam(answer, params.text)) {
-        const sheet = offlineFallback(params);
-        if (sheet && sheet.provider === 'local-exam') return sheet;
+      if (answer?.trim()) {
+        return { answer, mode: 'ai', provider };
       }
-      return { answer, mode: 'ai', provider };
     } catch (error) {
       markProviderFailure(provider, error);
     }
@@ -203,53 +217,41 @@ export async function askQuestion(params) {
   if (offline) return offline;
 
   const answer = await askDemo(params);
-  return {
-    answer,
-    mode: params.usedOcr ? 'ai' : 'demo',
-    provider: params.usedOcr ? 'ocr-local' : 'demo',
-  };
+  return { answer, mode: 'demo', provider: 'demo' };
 }
 
-function looksIncompleteForExam(answer, ocrText) {
-  const questions = (ocrText || '').match(/(?:^|\n)\s*(?:\d{1,2}|[۰-۹]{1,2})\s*[.)\-–:،]/gm) || [];
-  if (questions.length < 2) return false;
-  const answeredHeaders = (answer || '').match(/###\s*سوال|سوال\s*[۰-۹\d]+/g) || [];
-  return answeredHeaders.length < Math.min(questions.length, 2);
-}
+export async function* streamQuestion(params, { signal } = {}) {
+  assertNotAborted(signal);
 
-export async function* streamQuestion(params) {
-  const local = localFallback(params);
-  if (local && !params.imageBase64 && !params.usedOcr) {
-    yield* yieldLocal(local);
+  const math = mathOnlyFallback(params);
+  if (math) {
+    yield* yieldLocal(math);
     return;
   }
 
   const providers = await getProviderList(params);
-
   for (const provider of providers) {
+    assertNotAborted(signal);
     try {
       const { stream } = await tryProvider(provider, params, true);
-      const chunks = [];
+      let gotChunk = false;
       for await (const chunk of stream) {
-        chunks.push(chunk);
-      }
-      const answer = chunks.join('');
-      if (params.usedOcr && looksIncompleteForExam(answer, params.text)) {
-        const sheet = offlineFallback(params);
-        if (sheet && sheet.provider === 'local-exam') {
-          yield* yieldLocal(sheet);
-          return;
-        }
-      }
-      for (const chunk of chunks) {
+        assertNotAborted(signal);
+        if (!chunk) continue;
+        gotChunk = true;
         yield { type: 'chunk', text: chunk };
       }
-      yield { type: 'done', mode: 'ai', provider };
-      return;
+      if (gotChunk) {
+        yield { type: 'done', mode: 'ai', provider };
+        return;
+      }
     } catch (error) {
+      if (error?.name === 'AbortError') return;
       markProviderFailure(provider, error);
     }
   }
+
+  assertNotAborted(signal);
 
   const offline = offlineFallback(params);
   if (offline) {
@@ -259,11 +261,8 @@ export async function* streamQuestion(params) {
 
   const answer = await askDemo(params);
   for await (const chunk of streamDemo(answer)) {
+    assertNotAborted(signal);
     yield { type: 'chunk', text: chunk };
   }
-  yield {
-    type: 'done',
-    mode: params.usedOcr ? 'ai' : 'demo',
-    provider: params.usedOcr ? 'ocr-local' : 'demo',
-  };
+  yield { type: 'done', mode: 'demo', provider: 'demo' };
 }

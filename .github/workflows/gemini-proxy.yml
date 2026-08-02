@@ -1,0 +1,96 @@
+name: Gemini Proxy (Iran bypass)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */4 * * *"
+
+jobs:
+  proxy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 290
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Start Gemini OpenAI-compatible proxy
+        env:
+          PORT: "8787"
+        run: |
+          nohup node gemini-proxy/server.mjs > proxy.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:8787/health" >/dev/null; then
+              echo "proxy ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "proxy failed"
+          cat proxy.log || true
+          exit 1
+
+      - name: Cloudflare quick tunnel + publish URL
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -e
+          curl -fsSL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+          ./cloudflared tunnel --url http://127.0.0.1:8787 > tunnel.log 2>&1 &
+          CF_PID=$!
+
+          URL=""
+          for i in $(seq 1 90); do
+            URL=$(grep -Eo 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' tunnel.log | head -n 1 || true)
+            if [ -n "$URL" ]; then
+              break
+            fi
+            if ! kill -0 "$CF_PID" 2>/dev/null; then
+              echo "cloudflared exited"
+              cat tunnel.log || true
+              exit 1
+            fi
+            sleep 2
+          done
+
+          if [ -z "$URL" ]; then
+            echo "tunnel URL missing"
+            cat tunnel.log || true
+            exit 1
+          fi
+
+          echo "PROXY_URL=$URL"
+          # smoke test from runner
+          CODE=$(curl -s -o /tmp/out.json -w "%{http_code}" -X POST "$URL/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $GEMINI_API_KEY" \
+            -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"سلام"}],"max_tokens":30}')
+          echo "smoke=$CODE"
+          head -c 200 /tmp/out.json || true
+          echo
+
+          mkdir -p public-proxy
+          echo "$URL" > public-proxy/PROXY_URL.txt
+          echo "$URL/v1" > public-proxy/OPENAI_BASE_URL.txt
+          date -u +%Y-%m-%dT%H:%M:%SZ > public-proxy/UPDATED_AT.txt
+
+          git config user.name "makan-bot"
+          git config user.email "makan-bot@users.noreply.github.com"
+          git add public-proxy/PROXY_URL.txt public-proxy/OPENAI_BASE_URL.txt public-proxy/UPDATED_AT.txt
+          git commit -m "chore: update gemini proxy url" || true
+          git push origin HEAD:gemini-proxy-url --force
+
+          echo "## Gemini Proxy" >> "$GITHUB_STEP_SUMMARY"
+          echo "URL: $URL/v1" >> "$GITHUB_STEP_SUMMARY"
+
+          while kill -0 "$CF_PID" 2>/dev/null; do
+            sleep 60
+          done
+          echo "tunnel ended"
+          cat tunnel.log || true
+          exit 1

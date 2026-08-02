@@ -94,22 +94,46 @@ const server = http.createServer(async (req, res) => {
       payload.systemInstruction = { parts: [{ text: systemParts.join('\n') }] };
     }
 
-    const geminiUrl = `${BASE}/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
-    const resp = await fetch(geminiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const data = await resp.json();
-    if (!resp.ok) {
-      return send(res, resp.status, { error: { message: data?.error?.message || 'Gemini error', raw: data } });
+    const models = [
+      'gemini-2.5-flash',
+      'gemini-2.0-flash',
+      'gemini-1.5-flash',
+      'gemini-1.5-flash-latest',
+      'gemini-flash-latest',
+    ];
+
+    let data = null;
+    let okModel = models[0];
+    let lastStatus = 500;
+    for (const model of models) {
+      const geminiUrl = `${BASE}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const resp = await fetch(geminiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      lastStatus = resp.status;
+      data = await resp.json();
+      if (resp.ok) {
+        okModel = model;
+        break;
+      }
+      const msg = data?.error?.message || '';
+      if (!/429|quota|rate|not found|404|NOT_FOUND/i.test(msg) && resp.status !== 429 && resp.status !== 404) {
+        return send(res, resp.status, { error: { message: msg || 'Gemini error', raw: data } });
+      }
     }
-    const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '';
+
+    if (!data?.candidates?.[0]?.content?.parts) {
+      return send(res, lastStatus, { error: { message: data?.error?.message || 'Gemini error', raw: data } });
+    }
+
+    const text = data.candidates[0].content.parts.map((p) => p.text || '').join('') || '';
     return send(res, 200, {
       id: 'chatcmpl-proxy',
       object: 'chat.completion',
       created: Math.floor(Date.now() / 1000),
-      model: 'gemini-2.0-flash',
+      model: okModel,
       choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }],
     });
   } catch (error) {

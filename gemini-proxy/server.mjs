@@ -1,7 +1,8 @@
 import http from 'http';
 
 const PORT = Number(process.env.PORT || 8787);
-const BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
 function send(res, status, data) {
   const body = JSON.stringify(data);
@@ -49,6 +50,65 @@ function toGemini(messages) {
   return { systemParts, contents };
 }
 
+async function askGemini(apiKey, body) {
+  const { systemParts, contents } = toGemini(body.messages);
+  const payload = {
+    contents,
+    generationConfig: {
+      temperature: body.temperature ?? 0.15,
+      maxOutputTokens: body.max_tokens || 4096,
+    },
+  };
+  if (systemParts.length) {
+    payload.systemInstruction = { parts: [{ text: systemParts.join('\n') }] };
+  }
+
+  const models = [
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+    'gemini-1.5-flash-latest',
+    'gemini-flash-latest',
+  ];
+
+  let last = null;
+  for (const model of models) {
+    const geminiUrl = `${GEMINI_BASE}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const resp = await fetch(geminiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    last = { status: resp.status, data, model };
+    if (resp.ok && data?.candidates?.[0]?.content?.parts) {
+      const text = data.candidates[0].content.parts.map((p) => p.text || '').join('') || '';
+      return { ok: true, text, model };
+    }
+  }
+  return { ok: false, ...last };
+}
+
+async function askGroq(apiKey, body) {
+  const resp = await fetch(GROQ_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      messages: body.messages || [],
+      temperature: body.temperature ?? 0.15,
+      max_tokens: body.max_tokens || 4096,
+    }),
+  });
+  const data = await resp.json();
+  if (!resp.ok) return { ok: false, status: resp.status, data };
+  const text = data?.choices?.[0]?.message?.content || '';
+  return { ok: true, text, model: 'llama-3.3-70b-versatile' };
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
@@ -61,7 +121,7 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
   const auth = req.headers.authorization || '';
-  const apiKey = auth.replace(/^Bearer\s+/i, '').trim();
+  const clientKey = auth.replace(/^Bearer\s+/i, '').trim();
 
   if (url.pathname === '/health') {
     return send(res, 200, { ok: true });
@@ -70,7 +130,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/v1/models' && req.method === 'GET') {
     return send(res, 200, {
       object: 'list',
-      data: [{ id: 'gpt-4o-mini', object: 'model' }, { id: 'gemini-2.0-flash', object: 'model' }],
+      data: [{ id: 'gpt-4o-mini', object: 'model' }, { id: 'gemini-2.5-flash', object: 'model' }],
     });
   }
 
@@ -78,64 +138,39 @@ const server = http.createServer(async (req, res) => {
     return send(res, 404, { error: { message: 'Not found' } });
   }
 
-  if (!apiKey) return send(res, 401, { error: { message: 'Missing API key' } });
-
   try {
     const body = await readBody(req);
-    const { systemParts, contents } = toGemini(body.messages);
-    const payload = {
-      contents,
-      generationConfig: {
-        temperature: body.temperature ?? 0.15,
-        maxOutputTokens: body.max_tokens || 4096,
-      },
-    };
-    if (systemParts.length) {
-      payload.systemInstruction = { parts: [{ text: systemParts.join('\n') }] };
-    }
+    const geminiKey = process.env.GEMINI_API_KEY || clientKey;
+    const groqKey = process.env.GROQ_API_KEY || '';
 
-    const models = [
-      'gemini-2.5-flash',
-      'gemini-2.0-flash',
-      'gemini-1.5-flash',
-      'gemini-1.5-flash-latest',
-      'gemini-flash-latest',
-    ];
-
-    let data = null;
-    let okModel = models[0];
-    let lastStatus = 500;
-    for (const model of models) {
-      const geminiUrl = `${BASE}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-      const resp = await fetch(geminiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      lastStatus = resp.status;
-      data = await resp.json();
-      if (resp.ok) {
-        okModel = model;
-        break;
-      }
-      const msg = data?.error?.message || '';
-      if (!/429|quota|rate|not found|404|NOT_FOUND/i.test(msg) && resp.status !== 429 && resp.status !== 404) {
-        return send(res, resp.status, { error: { message: msg || 'Gemini error', raw: data } });
+    if (geminiKey) {
+      const g = await askGemini(geminiKey, body);
+      if (g.ok) {
+        return send(res, 200, {
+          id: 'chatcmpl-proxy',
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model: g.model,
+          choices: [{ index: 0, message: { role: 'assistant', content: g.text }, finish_reason: 'stop' }],
+        });
       }
     }
 
-    if (!data?.candidates?.[0]?.content?.parts) {
-      return send(res, lastStatus, { error: { message: data?.error?.message || 'Gemini error', raw: data } });
+    if (groqKey) {
+      const q = await askGroq(groqKey, body);
+      if (q.ok) {
+        return send(res, 200, {
+          id: 'chatcmpl-proxy',
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model: q.model,
+          choices: [{ index: 0, message: { role: 'assistant', content: q.text }, finish_reason: 'stop' }],
+        });
+      }
+      return send(res, q.status || 502, { error: { message: q.data?.error?.message || 'Groq error', raw: q.data } });
     }
 
-    const text = data.candidates[0].content.parts.map((p) => p.text || '').join('') || '';
-    return send(res, 200, {
-      id: 'chatcmpl-proxy',
-      object: 'chat.completion',
-      created: Math.floor(Date.now() / 1000),
-      model: okModel,
-      choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }],
-    });
+    return send(res, 429, { error: { message: 'No upstream AI available (quota/key)' } });
   } catch (error) {
     return send(res, 500, { error: { message: error.message || 'proxy error' } });
   }

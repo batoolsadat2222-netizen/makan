@@ -1,9 +1,11 @@
-name: Gemini Proxy (Iran bypass)
+name: Gemini Proxy
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 */4 * * *"
+
+concurrency:
+  group: gemini-proxy
+  cancel-in-progress: true
 
 jobs:
   proxy:
@@ -65,14 +67,7 @@ jobs:
           fi
 
           echo "PROXY_URL=$URL"
-          # smoke test from runner
-          CODE=$(curl -s -o /tmp/out.json -w "%{http_code}" -X POST "$URL/v1/chat/completions" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $GEMINI_API_KEY" \
-            -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"سلام"}],"max_tokens":30}')
-          echo "smoke=$CODE"
-          head -c 200 /tmp/out.json || true
-          echo
+          sleep 8
 
           mkdir -p public-proxy
           echo "$URL" > public-proxy/PROXY_URL.txt
@@ -88,8 +83,18 @@ jobs:
           echo "## Gemini Proxy" >> "$GITHUB_STEP_SUMMARY"
           echo "URL: $URL/v1" >> "$GITHUB_STEP_SUMMARY"
 
+          # smoke (non-fatal)
+          CODE=$(curl -s -o /tmp/out.json -w "%{http_code}" --max-time 45 -X POST "$URL/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $GEMINI_API_KEY" \
+            -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"سلام یک کلمه"}],"max_tokens":30}' || true)
+          echo "smoke=$CODE"
+          head -c 400 /tmp/out.json || true
+          echo
+
           while kill -0 "$CF_PID" 2>/dev/null; do
             sleep 60
+            curl -fsS "http://127.0.0.1:8787/health" >/dev/null || exit 1
           done
           echo "tunnel ended"
           cat tunnel.log || true

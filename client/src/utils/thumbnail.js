@@ -1,5 +1,10 @@
 export function createThumbnail(file, maxWidth = 200) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
+    if (!file?.type?.startsWith('image/')) {
+      resolve(null);
+      return;
+    }
+
     const img = new Image();
     const url = URL.createObjectURL(file);
 
@@ -16,7 +21,7 @@ export function createThumbnail(file, maxWidth = 200) {
 
     img.onerror = () => {
       URL.revokeObjectURL(url);
-      reject(new Error('خطا در ساخت تصویر کوچک'));
+      resolve(null);
     };
 
     img.src = url;

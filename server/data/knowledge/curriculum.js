@@ -448,8 +448,8 @@ he/she/it + verb + s
 
 function isDefinitionLike(text) {
   const q = text.trim();
-  if (q.length <= 70) return true;
-  return /چیست|یعنی|تعریف|توضیح|شرح\s*بده|چطور|چگونه|\?|؟/.test(q);
+  // فقط سوال‌های تعریفی صریح — طول کوتاه به‌تنهایی کافی نیست
+  return /چیست|یعنی\s*چه|تعریف\s*کن|تعریف\s*کنید|توضیح\s*بده|شرح\s*بده|چگونه\s*تعریف/.test(q);
 }
 
 const ALL_KNOWLEDGE = [...KNOWLEDGE_ENTRIES, ...EXTRA_KNOWLEDGE];
@@ -458,6 +458,11 @@ export function matchKnowledge(text) {
   const q = (text || '').trim();
   if (!q) return null;
 
+  // سوال عددی/محاسباتی را با دانش تعریفی جواب نده
+  if (/[\d۰-۹]+\s*[+\-×÷*/=]\s*[\d۰-۹]+/.test(q) && !/چیست|تعریف/.test(q)) {
+    return null;
+  }
+
   let best = null;
   let bestScore = -1;
 
@@ -465,6 +470,10 @@ export function matchKnowledge(text) {
     const matched = q.match(item.test);
     if (!matched) continue;
     if (item.broad && !isDefinitionLike(q)) continue;
+    // specificهای فرمول‌کلی برای سوال عددی خاص مناسب نیستند مگر تعریف باشد
+    if (item.specific && /[\d۰-۹]/.test(q) && !isDefinitionLike(q) && !item.allowsNumeric) {
+      continue;
+    }
 
     let score = (matched[0] || '').length;
     if (item.specific) score += 40;
@@ -477,5 +486,7 @@ export function matchKnowledge(text) {
     }
   }
 
-  return best ? best.answer(q) : null;
+  // آستانه اطمینان بالاتر — match ضعیف جواب غلط می‌دهد
+  if (!best || bestScore < 12) return null;
+  return best.answer(q);
 }

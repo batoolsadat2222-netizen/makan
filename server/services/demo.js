@@ -49,8 +49,20 @@ function imageDemoMessage() {
 2. یا سوال را در تب «نوشتن سوال» تایپ کن`;
 }
 
-export async function askDemo({ text, imageBase64, subject, grade, usedOcr }) {
+export async function askDemo({ text, imageBase64, subject, grade, usedOcr, handoutText }) {
   await new Promise((resolve) => setTimeout(resolve, DEMO_DELAY_MS));
+
+  if (handoutText?.trim()) {
+    const local = askLocalTutor({
+      text: text?.trim() || '',
+      subject,
+      grade,
+      usedOcr,
+      handoutText,
+    });
+    if (local?.answer) return local.answer;
+    return 'در جزوه بخش مرتبطی پیدا نشد. عکس واضح‌تری از جزوه بفرستید.';
+  }
 
   if (imageBase64 && !(text || '').trim()) {
     return imageDemoMessage();
@@ -58,9 +70,10 @@ export async function askDemo({ text, imageBase64, subject, grade, usedOcr }) {
 
   const trimmed = text?.trim() || '';
   const local = askLocalTutor({ text: trimmed, subject, grade, usedOcr });
-  if (local) return local.answer;
+  if (local?.answer && !/پاسخ قطعی محلی پیدا نشد|VPN|ابری در دسترس نیست/i.test(local.answer)) {
+    return local.answer;
+  }
 
-  // سازگاری: دانش مستقیم
   const known = matchKnowledge(trimmed);
   if (known && !isPureMathQuestion(trimmed)) return known;
 
@@ -69,5 +82,5 @@ export async function askDemo({ text, imageBase64, subject, grade, usedOcr }) {
     if (solved) return solved.answer;
   }
 
-  return guideResponse(trimmed || 'سوال درسی', detectCategory(trimmed));
+  return `سوال دریافت شد، ولی الان اتصال هوش مصنوعی برقرار نشد. لطفاً چند ثانیه بعد دوباره تلاش کنید.\n\nسوال شما: «${trimmed || '—'}»`;
 }

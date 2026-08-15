@@ -3,8 +3,8 @@ name: Host Makan
 on:
   workflow_dispatch:
   schedule:
-    # هر ۵ ساعت یک‌بار ری‌استارت تا لینک زنده بماند
-    - cron: "0 */5 * * *"
+    # ری‌استارت دوره‌ای تا لینک رایگان زنده بماند
+    - cron: "0 */4 * * *"
 
 jobs:
   host:
@@ -31,14 +31,16 @@ jobs:
           NODE_ENV: production
           HOST: 0.0.0.0
           PORT: "8080"
-          GROQ_DISABLED: "true"
+          GROQ_DISABLED: "false"
+          GEMINI_DISABLED: "false"
           OLLAMA_DISABLED: "true"
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
         run: |
           nohup node server/index.js > server.log 2>&1 &
-          for i in $(seq 1 30); do
+          for i in $(seq 1 40); do
             if curl -fsS "http://127.0.0.1:8080/api/health" >/dev/null; then
               echo "server ready"
               exit 0
@@ -46,50 +48,82 @@ jobs:
             sleep 2
           done
           echo "server failed to start"
-          tail -n 100 server.log || true
+          tail -n 120 server.log || true
           exit 1
 
-      - name: Public tunnel and keep alive
+      - name: Public tunnel and publish URL
+        env:
+          NODE_ENV: production
+          HOST: 0.0.0.0
+          PORT: "8080"
+          GROQ_DISABLED: "false"
+          GEMINI_DISABLED: "false"
+          OLLAMA_DISABLED: "true"
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
         run: |
           set -e
-          npx --yes localtunnel --port 8080 > tunnel.log 2>&1 &
-          LT_PID=$!
+          npx --yes tunnelmole 8080 > tunnel.log 2>&1 &
+          TM_PID=$!
 
           URL=""
-          for i in $(seq 1 60); do
-            URL=$(grep -Eo 'https://[a-zA-Z0-9.-]+\.loca\.lt' tunnel.log | head -n 1 || true)
+          for i in $(seq 1 90); do
+            URL=$(grep -Eo 'https://[a-zA-Z0-9.-]+\.tunnelmole\.net' tunnel.log | head -n 1 || true)
             if [ -n "$URL" ]; then
               break
             fi
-            if ! kill -0 "$LT_PID" 2>/dev/null; then
-              echo "localtunnel exited early"
-              cat tunnel.log || true
-              exit 1
+            if ! kill -0 "$TM_PID" 2>/dev/null; then
+              echo "tunnelmole exited; trying cloudflared"
+              break
             fi
             sleep 2
           done
 
           if [ -z "$URL" ]; then
-            echo "tunnel URL not found"
+            curl -fsSL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+            chmod +x cloudflared
+            ./cloudflared tunnel --url http://127.0.0.1:8080 > cf.log 2>&1 &
+            CF_PID=$!
+            for i in $(seq 1 90); do
+              URL=$(grep -Eo 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' cf.log | head -n 1 || true)
+              if [ -n "$URL" ]; then
+                break
+              fi
+              sleep 2
+            done
+          fi
+
+          if [ -z "$URL" ]; then
+            echo "public URL not found"
             cat tunnel.log || true
+            cat cf.log || true
             exit 1
           fi
 
           echo "PUBLIC_URL=$URL"
-          echo "$URL" > LIVE_URL.txt
           echo "## ماکان آنلاین" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "لینک مستقیم: $URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "لینک: $URL" >> "$GITHUB_STEP_SUMMARY"
 
           git config user.name "makan-bot"
           git config user.email "makan-bot@users.noreply.github.com"
-          git add LIVE_URL.txt
-          git commit -m "Update live URL" || true
-          git push origin HEAD:live-url --force || true
+          git fetch origin live-url:live-url || git branch live-url
+          git worktree add /tmp/makan-live live-url || git worktree add -B live-url /tmp/makan-live
+          mkdir -p /tmp/makan-live/public-host
+          echo "$URL" > /tmp/makan-live/public-host/LIVE_URL.txt
+          date -u +%Y-%m-%dT%H:%M:%SZ > /tmp/makan-live/public-host/UPDATED_AT.txt
+          git -C /tmp/makan-live add public-host/LIVE_URL.txt public-host/UPDATED_AT.txt
+          git -C /tmp/makan-live commit -m "Update live URL" || true
+          git -C /tmp/makan-live push origin live-url --force
 
-          while kill -0 "$LT_PID" 2>/dev/null; do
+          echo "keeping tunnel alive"
+          while true; do
             sleep 60
+            if ! curl -fsS "http://127.0.0.1:8080/api/health" >/dev/null; then
+              echo "server died"
+              tail -n 80 server.log || true
+              exit 1
+            fi
           done
-          echo "tunnel process ended"
-          cat tunnel.log || true
-          exit 1

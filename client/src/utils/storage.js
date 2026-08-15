@@ -130,7 +130,8 @@ export function loadGuestUsage() {
 }
 
 export function getGuestRemaining() {
-  return Infinity;
+  const usage = loadGuestUsage();
+  return Math.max(0, GUEST_DAILY_LIMIT - (usage.count || 0));
 }
 
 export function incrementGuestUsage() {

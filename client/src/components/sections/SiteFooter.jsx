@@ -17,7 +17,7 @@ export default function SiteFooter() {
           <div>
             <MakanLogo iconClass="w-8 h-8" showTagline={false} />
             <p className="text-xs text-slate-400 mt-3 leading-relaxed">
-              سامانه ماکان برای پاسخ‌دهی به سوالات درسی — فارسی، رایگان، و سریع.
+              سامانه ماکان برای پاسخ‌دهی به سوالات درسی — فارسی، سریع، با ۳ سوال رایگان روزانه.
             </p>
           </div>
 

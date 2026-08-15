@@ -1,6 +1,6 @@
 import { trySolveMath } from './localSolver.js';
 import { matchKnowledge } from '../data/knowledge/curriculum.js';
-import { searchRelevantChapters, listAvailableTextbooks } from './textbook.js';
+import { searchRelevantChapters } from './textbook.js';
 import { wrapAnswer, finalAnswerLine, toPersianDigits, cleanQuestionEcho } from './answerFormat.js';
 import { detectCurriculum, detectSubjectFromText } from './detectCurriculum.js';
 import { SUBJECT_LABELS } from '../data/curriculum/labels.js';
@@ -17,6 +17,102 @@ function toEnglishDigits(str) {
 function roundNice(n) {
   if (!Number.isFinite(n)) return null;
   return Number.isInteger(n) ? n : Math.round(n * 1000) / 1000;
+}
+
+function tokenizeFa(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^\u0600-\u06FFa-z0-9\s]/gi, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 1);
+}
+
+/** پیدا کردن مرتبط‌ترین بخش جزوه برای یک سوال و ساخت پاسخ */
+export function answerFromHandout(question, handoutText) {
+  const handout = (handoutText || '').trim();
+  const q = (question || '').trim();
+  if (!handout || !q) return null;
+
+  const stop = new Set([
+    'این', 'آن', 'که', 'را', 'به', 'از', 'در', 'با', 'برای', 'یک', 'یا', 'تا',
+    'چه', 'چی', 'است', 'هست', 'شود', 'کنید', 'کن', 'شرح', 'توضیح', 'تعریف',
+    'سوال', 'پرسش', 'چیست', 'چرا', 'چگونه', 'کدام', 'نام', 'بنویس', 'بنویسید',
+  ]);
+
+  const chunks = handout
+    .split(/\n{2,}|(?==== صفحه)|(?<=[.!؟?؛;])\s+(?=[^\n]{20,})/)
+    .map((c) => c.replace(/^=== صفحه[^\n]*===\s*/i, '').trim())
+    .filter((c) => c.replace(/\s+/g, '').length >= 18);
+
+  const pool = chunks.length ? chunks : [handout.slice(0, 2500)];
+  const qTokens = tokenizeFa(q).filter((t) => t.length > 2 && !stop.has(t));
+  if (!qTokens.length) {
+    const preview = handout.slice(0, 700).trim();
+    return preview ? `طبق جزوه:\n${preview}` : null;
+  }
+
+  const scored = pool.map((chunk) => {
+    const lower = chunk.toLowerCase();
+    const set = new Set(tokenizeFa(chunk));
+    let score = 0;
+    for (const t of qTokens) {
+      if (set.has(t)) score += t.length > 3 ? 3 : 2;
+      else if (lower.includes(t)) score += 1;
+    }
+    if (/یعنی|عبارت است از|عبارتند از|تعریف|به معنای/.test(chunk)) score += 1;
+    return { chunk, score };
+  }).sort((a, b) => b.score - a.score);
+
+  const best = scored[0];
+  if (!best || best.score < 1) return null;
+
+  const parts = [best.chunk];
+  if (scored[1] && scored[1].score >= Math.max(2, best.score - 1) && scored[1].chunk !== best.chunk) {
+    parts.push(scored[1].chunk);
+  }
+  let body = parts.join('\n\n').trim();
+  if (body.length > 1400) body = `${body.slice(0, 1400).trim()}…`;
+  return `طبق جزوه:\n${body}`;
+}
+
+/** پاسخ چندسوالی فقط از روی جزوه */
+export function answerExamFromHandout(text, handoutText) {
+  const handout = (handoutText || '').trim();
+  const trimmed = (text || '').trim();
+  if (!handout || !trimmed) return null;
+
+  const questions = splitExamQuestions(trimmed);
+  if (questions.length <= 1) {
+    const one = answerFromHandout(trimmed, handout);
+    if (!one) {
+      return {
+        answer: 'در جزوه بخش مرتبطی برای این سوال پیدا نشد. عکس واضح‌تری از جزوه بفرستید یا سوال را دقیق‌تر بنویسید.',
+        provider: 'local-handout',
+        answered: 0,
+        total: 1,
+      };
+    }
+    return { answer: one, provider: 'local-handout', answered: 1, total: 1 };
+  }
+
+  const blocks = [];
+  let answered = 0;
+  questions.forEach((q, i) => {
+    const found = answerFromHandout(q, handout);
+    if (found) {
+      answered += 1;
+      blocks.push(`### سوال ${toPersianDigits(i + 1)}\n${found}`);
+    } else {
+      blocks.push(`### سوال ${toPersianDigits(i + 1)}\nدر جزوه اشاره‌ای به این موضوع نشده.`);
+    }
+  });
+
+  return {
+    answer: `پاسخ طبق جزوه (${toPersianDigits(questions.length)} سوال):\n\n${blocks.join('\n\n---\n\n')}`,
+    provider: 'local-handout',
+    answered,
+    total: questions.length,
+  };
 }
 
 /** معادله خطی ساده: 2x+3=7 یا x-4=10 */
@@ -174,51 +270,31 @@ function textbookAnswerFromChapters(text, chapters, book) {
   if (!chapters?.length) return null;
   const best = chapters[0];
   if (!best?.content || best.content.length < 40) return null;
-  if (/فقط مطالب همین پایه|پاسخ را مطابق کتاب/.test(best.content)) return null;
+  // محتوای ساختگی/fallback را به‌عنوان جواب برنگردان
+  if (/فقط مطالب همین پایه|پاسخ را مطابق کتاب|این بخش:/.test(best.content)) return null;
+  if (book?.fallback) return null;
+  if (!best?.score || best.score < 6) return null;
 
-  const extras = chapters.slice(1, 3)
-    .filter((ch) => ch.content && !/فقط مطالب همین پایه|پاسخ را مطابق کتاب/.test(ch.content))
-    .map((ch) => `\n\n**${ch.title}:**\n${ch.content}`)
-    .join('');
+  // فقط همان فصل مرتبط — چند فصل قاطی جواب غلط می‌دهد
+  const body = best.content.length > 900 ? `${best.content.slice(0, 900).trim()}…` : best.content;
 
-  return wrapAnswer(
-    text,
-    `**پاسخ (${book?.title || 'کتاب درسی'} — ${best.title}):**
-${best.content}${extras}`
-  );
+  return wrapAnswer(text, body);
 }
 
 export function answerFromTextbook(text, grade, subject) {
   if (!text?.trim()) return null;
 
-  if (grade && subject) {
-    const { book, chapters } = searchRelevantChapters(grade, subject, text, 3);
-    if (book && chapters.length) {
-      const ans = textbookAnswerFromChapters(text, chapters, book);
-      if (ans) return ans;
-    }
-  }
+  // فقط همان پایه و درس — جستجوی بین‌کتابی باعث جواب غلط می‌شود
+  if (!grade || !subject) return null;
 
-  const available = listAvailableTextbooks();
-  let best = null;
-  for (const item of available) {
-    const { book, chapters } = searchRelevantChapters(item.grade, item.subject, text, 2);
-    if (!chapters.length || !book) continue;
-    const ch = chapters[0];
-    if (/فقط مطالب همین پایه|پاسخ را مطابق کتاب/.test(ch.content || '')) continue;
-    const tokens = text.toLowerCase().split(/\s+/).filter((w) => w.length > 1);
-    let score = 0;
-    const blob = `${ch.title} ${ch.keywords?.join(' ') || ''} ${ch.content}`.toLowerCase();
-    for (const token of tokens) {
-      if (blob.includes(token)) score += 1;
-    }
-    if (!best || score > best.score) best = { score, book, chapters };
-  }
+  const { book, chapters } = searchRelevantChapters(grade, subject, text, 3);
+  if (!book || !chapters.length) return null;
 
-  if (best && best.score >= 2) {
-    return textbookAnswerFromChapters(text, best.chapters, best.book);
-  }
-  return null;
+  // فصل باید واقعاً مرتبط باشد
+  const best = chapters[0];
+  if (!best?.score || best.score < 6) return null;
+
+  return textbookAnswerFromChapters(text, chapters, book);
 }
 
 /** جدا کردن سوالات یک برگه از روی متن OCR یا تایپ‌شده */
@@ -257,7 +333,8 @@ function stripOuterQuestionLabel(answer) {
 }
 
 /**
- * پاسخ به همه سوالات برگه (یکی‌یکی) — برای عکس/OCR
+ * پاسخ به همه سوالات برگه (یکی‌یکی) — فقط اگر همه را مطمئن جواب داد
+ * اگر حتی یک سوال بدون جواب محلی ماند → null تا AI کل برگه را جواب دهد
  */
 export function answerExamSheet({ text = '', subject = '', grade = '' } = {}) {
   const questions = splitExamQuestions(text);
@@ -267,7 +344,8 @@ export function answerExamSheet({ text = '', subject = '', grade = '' } = {}) {
   let answered = 0;
   const subjectsUsed = new Set();
 
-  questions.forEach((q, index) => {
+  for (let index = 0; index < questions.length; index += 1) {
+    const q = questions[index];
     const n = toPersianDigits(index + 1);
     const perQ = detectCurriculum({ text: q, subject: '', grade: grade || '' });
     const qSubject = detectSubjectFromText(q) || perQ.subject || subject;
@@ -282,22 +360,19 @@ export function answerExamSheet({ text = '', subject = '', grade = '' } = {}) {
       single: true,
     });
 
+    if (!result?.answer?.trim()) {
+      // ناقص = AI باید کل برگه را جواب بدهد
+      return null;
+    }
+
+    answered += 1;
     const subjectTag = qSubject && SUBJECT_LABELS[qSubject]
       ? ` · ${SUBJECT_LABELS[qSubject]}`
       : '';
+    blocks.push(`### سوال ${n}${subjectTag}\n\n${stripOuterQuestionLabel(result.answer)}`);
+  }
 
-    if (result?.answer) {
-      answered += 1;
-      blocks.push(`### سوال ${n}${subjectTag}\n\n${stripOuterQuestionLabel(result.answer)}`);
-    } else {
-      const preview = cleanQuestionEcho(q, 160);
-      blocks.push(
-        `### سوال ${n}${subjectTag}\n\n**متن خوانده‌شده:** ${preview || '—'}\n\nبرای این مورد پاسخ قطعی محلی پیدا نشد. متن را واضح‌تر بفرست یا سوال را تایپ کن.`
-      );
-    }
-  });
-
-  if (questions.length === 1 && answered === 0) return null;
+  if (answered === 0 || answered < questions.length) return null;
 
   const subjectList = [...subjectsUsed]
     .map((id) => SUBJECT_LABELS[id] || id)
@@ -307,7 +382,7 @@ export function answerExamSheet({ text = '', subject = '', grade = '' } = {}) {
     : '';
 
   const header = questions.length > 1
-    ? `پاسخ به **${toPersianDigits(questions.length)}** سوال برگه (پاسخ‌داده‌شده: ${toPersianDigits(answered)}):\n\n${subjectLine}`
+    ? `پاسخ به **${toPersianDigits(questions.length)}** سوال برگه:\n\n${subjectLine}`
     : subjectLine;
 
   return {
@@ -327,14 +402,25 @@ export function askLocalTutor({
   grade = '',
   usedOcr = false,
   single = false,
+  handoutText = '',
 } = {}) {
   const trimmed = (text || '').trim();
   if (!trimmed) return null;
 
-  // برگه چندسوالی: همه را جداگانه جواب بده
+  const handout = (handoutText || '').trim();
+
+  // حالت جزوه: فقط از متن جزوه — هرگز دانش/کتاب عمومی
+  if (handout) {
+    return answerExamFromHandout(trimmed, handout);
+  }
+
+  // برگه چندسوالی/OCR: فقط اگر همه سوالات محلی و کامل جواب شدند
   if (!single && (usedOcr || splitExamQuestions(trimmed).length > 1)) {
     const sheet = answerExamSheet({ text: trimmed, subject, grade });
-    if (sheet) return sheet;
+    if (sheet && sheet.answered === sheet.total && sheet.answered > 0) {
+      return sheet;
+    }
+    // ناقص → null تا مسیر AI جواب واقعی بدهد
   }
 
   // حذف شماره سوال مثل «۲.» یا «3)»
@@ -342,9 +428,12 @@ export function askLocalTutor({
     .replace(/^[\t ]*(?:\d{1,2}|[۰-۹]{1,2})[\t ]*[.)\-–:،]\s*/, '')
     .trim() || trimmed;
 
-  // اگر subject کلی برگه با موضوع این سوال فرق دارد، موضوع همین سوال را بگیر
-  const detectedSubject = detectSubjectFromText(cleaned) || subject;
-  const detected = detectCurriculum({ text: cleaned, subject: detectedSubject, grade });
+  // اگر کاربر درس/پایه داده همان اولویت دارد؛ در غیر این صورت از سوال حدس بزن
+  const detected = detectCurriculum({
+    text: cleaned,
+    subject: subject || detectSubjectFromText(cleaned) || '',
+    grade,
+  });
   const useSubject = detected.subject || subject;
   const useGrade = detected.grade || grade;
 

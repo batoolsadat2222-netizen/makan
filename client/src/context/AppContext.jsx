@@ -269,36 +269,32 @@ export function AppProvider({ children }) {
 
 
   const canAskQuestion = useCallback(() => {
-
-    return { allowed: true, remaining: Infinity };
-
-  }, []);
+    if (user) {
+      return { allowed: true, remaining: Infinity };
+    }
+    const remaining = getGuestRemaining();
+    return {
+      allowed: remaining > 0,
+      remaining,
+      message: remaining > 0
+        ? null
+        : '۳ سوال رایگان امروز تمام شد. برای ادامه، اشتراک بخرید یا ثبت‌نام کنید.',
+    };
+  }, [user]);
 
 
 
   const recordQuestion = useCallback(() => {
-
     if (user && loadToken()) {
-
       refreshUserStats();
-
     } else {
-
-      // فقط شمارش آماری؛ سهمیه‌ای وجود ندارد
       incrementGuestUsage();
-
       refreshUsage();
-
       if (user && !loadToken()) {
-
         incrementUserQuestions(user.id);
-
         setUserStats(getUserStats(user.id));
-
       }
-
     }
-
   }, [user, refreshUsage, refreshUserStats]);
 
 

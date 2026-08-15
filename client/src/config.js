@@ -15,6 +15,8 @@ export const API = {
     feedback: `${API_BASE}/api/analytics/feedback`,
   },
   contact: `${API_BASE}/api/contact`,
+  setupStatus: `${API_BASE}/api/setup/ai-status`,
+  setupAiKey: `${API_BASE}/api/setup/ai-key`,
   curriculum: {
     textbook: `${API_BASE}/api/curriculum/textbook`,
     textbooks: `${API_BASE}/api/curriculum/textbooks`,

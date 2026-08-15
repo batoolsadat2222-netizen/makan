@@ -45,7 +45,10 @@ export default function RegisterPanel() {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <PlanBenefits title="با ثبت‌نام رایگان دریافت می‌کنید" />
+      <PlanBenefits title="با ثبت‌نام و اشتراک دریافت می‌کنید" />
+      <p className="text-xs text-slate-500 dark:text-slate-400 leading-6 -mt-1">
+        مهمان فقط ۳ سوال رایگان در روز دارد. بعد از ثبت‌نام، سوالات نامحدود می‌شود.
+      </p>
 
       {error && (
         <div className="text-sm text-red-600 bg-red-50 dark:bg-red-950/30 dark:text-red-400 border border-red-200 dark:border-red-900 rounded-xl px-4 py-3">

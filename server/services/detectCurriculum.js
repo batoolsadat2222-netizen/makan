@@ -1,20 +1,24 @@
 import { SUBJECT_LABELS, GRADE_LABELS, getSubjectsForGrade } from '../data/curriculum/labels.js';
 
-/** الگوهای تشخیص درس با امتیاز */
+/** الگوهای تشخیص درس با امتیاز — الگوهای پهن وزن کم دارند */
 const SUBJECT_PATTERNS = [
-  ['math', /ریاضی|معادله|کسر|مساحت|محیط|جذر|توان|فیثاغورث|دلتا|احتمال|میانگین|ب م م|ک م م|[\d۰-۹]+\s*[+\-×÷*/=]|درصد\s*از/, 3],
-  ['physics', /فیزیک|نیوتن|شتاب|ولتاژ|مقاومت|گرانش|لختی|ژول|وات|آمپر|قانون\s*اهم|F\s*=\s*m/, 4],
-  ['chemistry', /شیمی|جدول\s*تناوبی|اسید|قلیا|یون|واکنش\s*شیمیایی|مول|پی\s*اچ|pH/, 4],
-  ['biology', /زیست|فتوسنتز|سلول|یاخته|DNA|ژن|قلب|تنفس\s*سلولی|میتوکندری|کلروپلاست|وراثت/, 4],
-  ['persian', /فارسی|املا|انشا|شعر|آرایه|فاعل|مفعول|مسند|نهاد|تشبیه|استعاره|کنایه|قید|صفت/, 4],
-  ['english', /english|انگلیسی|grammar|vocabulary|present\s*simple|past\s*simple|to be|ترجمه\s*انگلیسی/i, 4],
-  ['arabic', /عربی|فعل\s*ماضی|فعل\s*مضارع|اعراب|صرف\s*فعل|جمع\s*مکسر/, 4],
-  ['social', /مطالعات|جغرافیا|تاریخ|نقشه|تمدن|هخامنشی|قاره|آب\s*و\s*هوا|قانون\s*اساسی/, 3],
-  ['quran', /قرآن|سوره|آیه|تجوید|قرائت/, 4],
-  ['heaven', /هدیه|پیامبر|نماز|روزه|امامت|اخلاق\s*اسلامی/, 3],
-  ['writing', /نگارش|انشا|خلاصه‌نویسی|نامه‌نگاری/, 3],
-  ['science', /علوم|انرژی|مغناطیس|گیاه|جانور|آزمایش|حالت\s*ماده|جامد|مایع|گاز|چرخه\s*آب/, 2],
-  ['art', /هنر|رنگ|طراحی|نقاشی/, 2],
+  ['math', /ریاضی|معادله|کسر|مساحت|محیط|جذر|توان|فیثاغورث|دلتا|احتمال|میانگین|ب م م|ک م م|درصد\s*از/, 4],
+  ['math', /(?:^|[^\d])[\d۰-۹]+\s*[+\-×÷*/=]\s*[\d۰-۹]+/, 2],
+  ['physics', /فیزیک|نیوتن|شتاب|ولتاژ|مقاومت|گرانش|لختی|ژول|وات|آمپر|قانون\s*اهم|F\s*=\s*m/, 5],
+  ['chemistry', /شیمی|جدول\s*تناوبی|اسید|قلیا|یون|واکنش\s*شیمیایی|مول|پی\s*اچ|pH/, 5],
+  ['biology', /زیست|فتوسنتز|یاخته|DNA|ژن|قلب|تنفس\s*سلولی|میتوکندری|کلروپلاست|وراثت/, 5],
+  ['biology', /(?<![ا-ی])سلول(?![ا-ی])/, 3],
+  ['persian', /فارسی|املا|شعر|آرایه|فاعل|مفعول|مسند|نهاد|تشبیه|استعاره|کنایه|قید|صفت/, 4],
+  ['english', /english|انگلیسی|grammar|vocabulary|present\s*simple|past\s*simple|to be|ترجمه\s*انگلیسی/i, 5],
+  ['arabic', /عربی|فعل\s*ماضی|فعل\s*مضارع|اعراب|صرف\s*فعل|جمع\s*مکسر/, 5],
+  ['social', /مطالعات|جغرافیا|تاریخ|نقشه|تمدن|هخامنشی|قاره|آب\s*و\s*هوا|قانون\s*اساسی/, 4],
+  ['quran', /قرآن|سوره|آیه|تجوید|قرائت/, 5],
+  ['heaven', /هدیه‌های\s*آسمان|پیامبر|امامت|اخلاق\s*اسلامی/, 4],
+  ['writing', /نگارش|خلاصه‌نویسی|نامه‌نگاری/, 4],
+  ['writing', /(?<!کلمه\s)انشا(?![ا-ی])/, 3],
+  ['science', /علوم\s*تجربی|مغناطیس|چرخه\s*آب|حالت\s*ماده/, 3],
+  ['science', /گیاه|جانور|آزمایش|جامد|مایع|گاز|انرژی/, 2],
+  ['art', /هنر|رنگ‌آمیزی|طراحی|نقاشی/, 2],
   ['philosophy', /فلسفه|منطق/, 3],
   ['economics', /اقتصاد|بازار|تورم|بودجه/, 3],
 ];
@@ -40,57 +44,70 @@ export function detectSubjectFromText(text) {
       best = id;
     }
   }
+  // آستانه: حدس ضعیف را نادیده بگیر
+  if (bestScore < 3) return null;
   return best;
 }
 
 export function detectCurriculum({ text = '', subject = '', grade = '' } = {}) {
   const t = String(text || '');
-  let detectedSubject = subject;
+  let detectedSubject = subject ? String(subject) : '';
   let detectedGrade = grade ? String(grade) : '';
   const autoSubject = !detectedSubject;
   const autoGrade = !detectedGrade;
 
   if (!detectedSubject) {
-    detectedSubject = detectSubjectFromText(t) || 'science';
+    detectedSubject = detectSubjectFromText(t) || '';
   }
 
   if (!detectedGrade) {
-    const gradeMap = [
-      [12, /دوازدهم|پیش‌دانشگاهی/], [11, /یازدهم/], [10, /دهم/],
-      [9, /نهم/], [8, /هشتم/], [7, /هفتم/],
-      [6, /ششم/], [5, /پنجم/], [4, /چهارم/], [3, /سوم/], [2, /دوم/], [1, /اول/],
+    // فقط وقتی پایه صریح در متن آمده
+    const explicit = [
+      [12, /پایه\s*دوازدهم|کلاس\s*دوازدهم|سال\s*دوازدهم|دوازدهم\s*متوسطه/],
+      [11, /پایه\s*یازدهم|کلاس\s*یازدهم|سال\s*یازدهم/],
+      [10, /پایه\s*دهم|کلاس\s*دهم|سال\s*دهم/],
+      [9, /پایه\s*نهم|کلاس\s*نهم|سال\s*نهم/],
+      [8, /پایه\s*هشتم|کلاس\s*هشتم|سال\s*هشتم/],
+      [7, /پایه\s*هفتم|کلاس\s*هفتم|سال\s*هفتم|سال\s*اول\s*متوسطه/],
+      [6, /پایه\s*ششم|کلاس\s*ششم/],
+      [5, /پایه\s*پنجم|کلاس\s*پنجم/],
+      [4, /پایه\s*چهارم|کلاس\s*چهارم/],
+      [3, /پایه\s*سوم|کلاس\s*سوم/],
+      [2, /پایه\s*دوم|کلاس\s*دوم/],
+      [1, /پایه\s*اول(?!\s*متوسطه)|کلاس\s*اول(?!\s*متوسطه)/],
     ];
-    for (const [g, re] of gradeMap) {
-      if (re.test(t) && /پایه|کلاس|سال/.test(t)) {
+    for (const [g, re] of explicit) {
+      if (re.test(t)) {
         detectedGrade = String(g);
         break;
       }
     }
+    // فقط نشانه‌های خیلی قوی دبیرستان
     if (!detectedGrade) {
-      if (/مشتق|انتگرال|ماتریس|مثلثات/.test(t)) detectedGrade = '11';
-      else if (['physics', 'chemistry', 'biology'].includes(detectedSubject)) detectedGrade = '10';
-      else if (/کسر|مساحت|محیط|جدول ضرب/.test(t)) detectedGrade = '5';
-      else if (/[\d۰-۹]+\s*[+\-×÷*/]\s*[\d۰-۹]+/.test(t) && t.length < 80) detectedGrade = '3';
-      else if (detectedSubject === 'math') detectedGrade = '7';
-      else if (detectedSubject === 'persian') detectedGrade = '7';
-      else if (detectedSubject === 'arabic' || detectedSubject === 'english') detectedGrade = '8';
-      else detectedGrade = '6';
+      if (/مشتق|انتگرال|ماتریس|مثلثات\s* پیشرفته/.test(t)) detectedGrade = '11';
     }
   }
 
-  if (!GRADE_LABELS[detectedGrade]) detectedGrade = '6';
-  const allowed = getSubjectsForGrade(detectedGrade);
-  if (!allowed.includes(detectedSubject)) {
-    detectedSubject = (['physics', 'chemistry', 'biology'].includes(detectedSubject) && allowed.includes('science'))
-      ? 'science'
-      : (allowed.includes('math') ? 'math' : allowed[0]);
+  // اگر کاربر پایه نداده و حدس قوی نیست، خالی بگذار — AI از روی سوال تشخیص دهد
+  if (detectedGrade && !GRADE_LABELS[detectedGrade]) detectedGrade = '';
+
+  if (detectedGrade && detectedSubject) {
+    const allowed = getSubjectsForGrade(detectedGrade);
+    if (!allowed.includes(detectedSubject)) {
+      // فقط اگر کاربر خودش درس را انتخاب نکرده، remap کن
+      if (autoSubject) {
+        detectedSubject = (['physics', 'chemistry', 'biology'].includes(detectedSubject) && allowed.includes('science'))
+          ? 'science'
+          : (allowed.includes(detectedSubject) ? detectedSubject : '');
+      }
+    }
   }
 
   return {
-    subject: detectedSubject,
-    grade: detectedGrade,
-    subjectLabel: SUBJECT_LABELS[detectedSubject] || detectedSubject,
-    gradeLabel: GRADE_LABELS[detectedGrade] || detectedGrade,
+    subject: detectedSubject || '',
+    grade: detectedGrade || '',
+    subjectLabel: detectedSubject ? (SUBJECT_LABELS[detectedSubject] || detectedSubject) : '',
+    gradeLabel: detectedGrade ? (GRADE_LABELS[detectedGrade] || detectedGrade) : '',
     autoSubject,
     autoGrade,
   };

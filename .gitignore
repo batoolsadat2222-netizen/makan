@@ -10,3 +10,5 @@ server/fas.traineddata
 server/store/users.json
 server/store/analytics.json
 server/store/messages.json
+server/data/ai-config.json
+server/data/analytics.json

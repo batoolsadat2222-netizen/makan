@@ -6,11 +6,11 @@ const KEEP_ALIVE = process.env.OLLAMA_KEEP_ALIVE || '0';
 const VISION_PREFIXES = ['moondream', 'llava', 'bakllava', 'minicpm-v'];
 
 const FAST_OPTIONS = {
-  temperature: 0.2,
-  num_predict: Number(process.env.OLLAMA_NUM_PREDICT || 512),
-  num_ctx: Number(process.env.OLLAMA_NUM_CTX || 512),
+  temperature: 0.15,
+  num_predict: Number(process.env.OLLAMA_NUM_PREDICT || 1024),
+  num_ctx: Number(process.env.OLLAMA_NUM_CTX || 4096),
   top_k: 20,
-  top_p: 0.9,
+  top_p: 0.85,
 };
 
 let cachedModels = null;
@@ -51,6 +51,17 @@ export async function isOllamaAvailable() {
   try {
     const response = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(1500) });
     return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function hasGoodPersianModel() {
+  try {
+    const models = await getModels();
+    return models.some((m) =>
+      /qwen2\.5:(0\.5b|1\.5b|3b|7b|14b)|qwen2\.5:latest|aya|gemma2:9b|llama3\.1:8b/i.test(m)
+    );
   } catch {
     return false;
   }
@@ -119,9 +130,11 @@ async function resolveModel(vision) {
 
   const preferredOrder = [
     OLLAMA_MODEL,
+    'qwen2.5:3b',
+    'qwen2.5:1.5b',
     'qwen2.5:0.5b',
-    'tinyllama',
     'llama3.2:1b',
+    'tinyllama',
   ];
 
   for (const name of preferredOrder) {

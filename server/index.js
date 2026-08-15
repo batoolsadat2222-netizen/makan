@@ -11,7 +11,9 @@ import contactRouter from './routes/contact.js';
 import analyticsRouter from './routes/analytics.js';
 import adminRouter from './routes/admin.js';
 import curriculumRouter from './routes/curriculum.js';
+import setupRouter from './routes/setup.js';
 import { getActiveProvider } from './services/ai.js';
+import { isCompatConfigured } from './services/openaiCompat.js';
 import { prewarmOllama } from './services/ollama.js';
 import { generalLimiter } from './middleware/rateLimit.js';
 
@@ -26,29 +28,29 @@ app.set('trust proxy', 1);
 const PORT = process.env.PORT || 8080;
 const HOST = process.env.HOST || '0.0.0.0';
 
-const allowedOrigins = (process.env.CORS_ORIGINS ||
-  'http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://localhost:5174')
-  .split(',')
-  .map((o) => o.trim());
-
+// allowedOrigins دیگر برای CORS سخت‌گیرانه استفاده نمی‌شود (تونل عمومی)
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
-// در production (سایت واحد روی Render) origin خود سایت + لیست env
-const corsOrigin = process.env.NODE_ENV === 'production'
-  ? true
-  : (origin, cb) => {
-      if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
-      return cb(null, false);
-    };
-app.use(cors({ origin: corsOrigin }));
-app.use(express.json());
+// لینک عمومی (تونل) هم باید کار کند — همان‌origin یا هر origin مجاز
+app.use(cors({
+  origin: true,
+  credentials: true,
+}));
+app.use(express.json({ limit: '2mb' }));
 
 let healthProvider = 'demo';
 
-app.get('/api/health', (_req, res) => {
+app.get('/api/health', async (_req, res) => {
+  let cloudReady = false;
+  try {
+    cloudReady = Boolean(await isCompatConfigured());
+  } catch {
+    cloudReady = false;
+  }
   res.json({
     status: 'ok',
-    mode: healthProvider === 'demo' ? 'demo' : 'ai',
-    provider: healthProvider,
+    mode: cloudReady || healthProvider !== 'demo' ? 'ai' : 'demo',
+    provider: cloudReady ? 'compat' : healthProvider,
+    cloudReady,
     frontend: hasFrontend,
   });
 });
@@ -59,13 +61,33 @@ app.use('/api/auth', authRouter);
 app.use('/api/analytics', analyticsRouter);
 app.use('/api/curriculum', curriculumRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/setup', setupRouter);
 app.use('/api/contact', contactRouter);
 app.use('/api/ask', askRouter);
 
 if (hasFrontend) {
-  app.use(express.static(clientDist, { maxAge: '1d', index: false }));
+  // صفحه اصلی و SW هرگز کش بلندمدت نگیرند
+  app.get(['/', '/index.html', '/sw.js', '/registerSW.js', '/manifest.webmanifest'], (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    next();
+  });
+
+  app.use(express.static(clientDist, {
+    index: false,
+    etag: true,
+    setHeaders(res, filePath) {
+      if (/index\.html$|sw\.js$|registerSW\.js$|manifest\.webmanifest$/i.test(filePath)) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+      } else if (/[\\/]assets[\\/]/i.test(filePath)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    },
+  }));
+
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api')) return next();
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
     res.sendFile(path.join(clientDist, 'index.html'));
   });
 } else {

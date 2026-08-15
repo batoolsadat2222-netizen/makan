@@ -20,6 +20,23 @@ function friendlyError(err) {
   return err.message || 'خطا در دریافت پاسخ';
 }
 
+function cloneFormData(formData) {
+  const next = new FormData();
+  for (const [key, value] of formData.entries()) {
+    next.append(key, value);
+  }
+  return next;
+}
+
+function formHasFile(formData) {
+  for (const value of formData.values()) {
+    if (typeof Blob !== 'undefined' && value instanceof Blob && value.size > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export async function apiRegister(data) {
   const res = await fetch(API.auth.register, {
     method: 'POST',
@@ -147,47 +164,78 @@ async function askStreamInternal(formData, { onChunk, onDone, onError, onMeta })
   }
 
   if (streamError) {
+    if (fullAnswer.trim()) {
+      onDone?.({
+        answer: fullAnswer,
+        mode: 'ai',
+        provider: 'partial',
+      });
+      return fullAnswer;
+    }
     throw new Error(streamError);
   }
 
   if (!finished) {
-    throw new Error(
-      fullAnswer
-        ? 'پاسخ ناقص دریافت شد. لطفاً دوباره تلاش کنید.'
-        : 'پاسخی از سرور دریافت نشد. لطفاً دوباره تلاش کنید.'
-    );
+    if (fullAnswer.trim()) {
+      onDone?.({
+        answer: fullAnswer,
+        mode: 'ai',
+        provider: 'partial',
+      });
+      return fullAnswer;
+    }
+    throw new Error('پاسخی از سرور دریافت نشد. لطفاً دوباره تلاش کنید.');
   }
 
   return fullAnswer;
 }
 
-/** Stream first; on network/SSE failure fall back to regular POST */
+function deliverRegular(json, { onChunk, onDone }) {
+  if (!json?.answer?.trim()) {
+    throw new Error(json?.error || 'پاسخی دریافت نشد');
+  }
+  onChunk(json.answer);
+  onDone({
+    answer: json.answer,
+    mode: json.mode,
+    provider: json.provider,
+    textbook: json.textbook,
+    subject: json.subject,
+    grade: json.grade,
+    subjectLabel: json.subjectLabel,
+    gradeLabel: json.gradeLabel,
+  });
+  return json.answer;
+}
+
+/** عکس/فایل از تونل با POST پایدارتر است؛ متن با استریم */
 export async function askStream(formData, callbacks) {
-  const { onChunk, onDone, onError } = callbacks;
+  const { onChunk, onDone } = callbacks;
+  const primary = cloneFormData(formData);
+  const fallback = cloneFormData(formData);
+  const preferPost = formHasFile(formData);
+
+  if (preferPost) {
+    try {
+      const json = await askRegular(primary);
+      return deliverRegular(json, callbacks);
+    } catch (postErr) {
+      try {
+        return await askStreamInternal(fallback, callbacks);
+      } catch (streamErr) {
+        throw new Error(friendlyError(postErr?.message ? postErr : streamErr));
+      }
+    }
+  }
 
   try {
-    return await askStreamInternal(formData, callbacks);
+    return await askStreamInternal(primary, callbacks);
   } catch (streamErr) {
-    if (!isNetworkError(streamErr) && !/stream|aborted/i.test(streamErr.message)) {
-      throw new Error(friendlyError(streamErr));
-    }
-
     try {
-      const json = await askRegular(formData);
-      onChunk(json.answer);
-      onDone({
-        answer: json.answer,
-        mode: json.mode,
-        provider: json.provider,
-        textbook: json.textbook,
-        subject: json.subject,
-        grade: json.grade,
-        subjectLabel: json.subjectLabel,
-        gradeLabel: json.gradeLabel,
-      });
-      return json.answer;
+      const json = await askRegular(fallback);
+      return deliverRegular(json, callbacks);
     } catch (regularErr) {
-      throw new Error(friendlyError(regularErr));
+      throw new Error(friendlyError(regularErr?.message ? regularErr : streamErr));
     }
   }
 }

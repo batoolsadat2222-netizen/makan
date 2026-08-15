@@ -52,13 +52,15 @@ async function checkOllama() {
 async function getProviderList(params = {}) {
   const providers = [];
 
+  // Groq از ایران معمولاً در دسترس است — قبل از پروکسی ناپایدار
+  if (shouldTryGroq()) providers.push('groq');
+
   if (shouldTryCompatSyncGate() && (await isCompatConfigured())) {
     providers.push('compat');
   }
 
   // Gemini مستقیم از ایران معمولاً 403 — فقط اگر صریح فعال باشد
   if (!envFlag('GEMINI_DISABLED') && shouldTryGemini()) providers.push('gemini');
-  if (shouldTryGroq()) providers.push('groq');
 
   const ollamaOk = await checkOllama();
   if (ollamaOk) {
@@ -162,6 +164,10 @@ function mathOnlyFallback(params) {
   return null;
 }
 
+function isWeakLocalAnswer(answer = '') {
+  return /پاسخ قطعی محلی پیدا نشد|الان پاسخ کامل ابری در دسترس نیست|VPN روشن|متن عکس خوانده نشد/i.test(answer);
+}
+
 function localFallback(params) {
   const tutor = askLocalTutor({
     text: params.text || '',
@@ -170,7 +176,9 @@ function localFallback(params) {
     usedOcr: Boolean(params.usedOcr || params.imageBase64),
     handoutText: params.handoutText || '',
   });
-  if (tutor?.answer?.trim()) {
+  if (tutor?.answer?.trim() && !isWeakLocalAnswer(tutor.answer)) {
+    // برگه ناقص را به‌عنوان جواب نهایی نپذیر
+    if (tutor.total > 0 && tutor.answered < tutor.total) return null;
     return { answer: tutor.answer, mode: 'local', provider: tutor.provider || 'local' };
   }
   return mathOnlyFallback(params);
@@ -195,13 +203,83 @@ async function* yieldLocal(result) {
   yield { type: 'done', mode: result.mode || 'local', provider: result.provider };
 }
 
-export async function askQuestion(params) {
-  // ریاضی خالص: سریع و دقیق
-  const math = mathOnlyFallback(params);
-  if (math) return math;
+function handoutLocalFirst(params) {
+  if (!params.handoutText?.trim() || !(params.text || '').trim()) return null;
+  const tutor = askLocalTutor({
+    text: params.text || '',
+    subject: params.subject,
+    grade: params.grade,
+    usedOcr: Boolean(params.usedOcr || params.imageBase64),
+    handoutText: params.handoutText,
+  });
+  if (!tutor?.answer?.trim()) return null;
+  // اگر هیچ بخش مرتبطی پیدا نشد، به AI فرصت بده
+  if (tutor.total > 0 && tutor.answered === 0) return null;
+  return {
+    answer: tutor.answer,
+    mode: 'handout',
+    provider: tutor.provider || 'local-handout',
+  };
+}
 
-  // اول AI واقعی (AvalAI/Ollama) — بعد دانش محلی
+export async function askQuestion(params) {
+  const isHandout = Boolean(params.handoutText?.trim()) || params.mode === 'handout';
+
+  // ریاضی خالص فقط وقتی جزوه نیست
+  if (!isHandout) {
+    const math = mathOnlyFallback(params);
+    if (math) return math;
+  }
+
+  // جزوه: اول استخراج مستقیم از متن جزوه (وفادارتر از دانش عمومی AI)
+  if (isHandout) {
+    const fromHandout = handoutLocalFirst(params);
+    if (fromHandout) return fromHandout;
+  }
+
+  // همیشه اول AI — جواب واقعی سوال
   const providers = await getProviderList(params);
+  let lastAiError = null;
+  for (const provider of providers) {
+    try {
+      const { answer } = await tryProvider(provider, params, false);
+      if (answer?.trim() && !isWeakLocalAnswer(answer)) {
+        return { answer, mode: isHandout ? 'handout' : 'ai', provider };
+      }
+    } catch (error) {
+      lastAiError = error;
+      markProviderFailure(provider, error);
+    }
+  }
+
+  // اگر AI قطع شد، یک‌بار دیگر فقط compat را بعد از پاک‌کردن بلاک کوتاه امتحان کن
+  if (!isHandout && lastAiError && providers.includes('compat')) {
+    try {
+      compatBlockedUntil = 0;
+      const { answer } = await tryProvider('compat', params, false);
+      if (answer?.trim() && !isWeakLocalAnswer(answer)) {
+        return { answer, mode: 'ai', provider: 'compat' };
+      }
+    } catch (error) {
+      markProviderFailure('compat', error);
+    }
+  }
+
+  const offline = offlineFallback(params);
+  if (offline && !isWeakLocalAnswer(offline.answer || '')) {
+    if (isHandout) return { ...offline, mode: 'handout' };
+    return offline;
+  }
+
+  if (isHandout) {
+    return {
+      answer: 'متن جزوه خوانده شد، ولی پاسخ مطمئنی از روی آن ساخته نشد. عکس واضح‌تری از جزوه بفرستید.',
+      mode: 'handout',
+      provider: 'local-handout',
+    };
+  }
+
+  // آخرین شانس: دوباره AI بدون فیلتر محلی ضعیف
   for (const provider of providers) {
     try {
       const { answer } = await tryProvider(provider, params, false);
@@ -213,20 +291,36 @@ export async function askQuestion(params) {
     }
   }
 
-  const offline = offlineFallback(params);
-  if (offline) return offline;
-
   const answer = await askDemo(params);
-  return { answer, mode: 'demo', provider: 'demo' };
+  if (answer?.trim() && !isWeakLocalAnswer(answer)) {
+    return { answer, mode: 'demo', provider: 'demo' };
+  }
+
+  return {
+    answer: 'الان نتوانستیم پاسخ کامل بسازیم. لطفاً چند ثانیه بعد دوباره «دریافت پاسخ» را بزنید.',
+    mode: 'error',
+    provider: 'none',
+  };
 }
 
 export async function* streamQuestion(params, { signal } = {}) {
   assertNotAborted(signal);
+  const isHandout = Boolean(params.handoutText?.trim()) || params.mode === 'handout';
 
-  const math = mathOnlyFallback(params);
-  if (math) {
-    yield* yieldLocal(math);
-    return;
+  if (!isHandout) {
+    const math = mathOnlyFallback(params);
+    if (math) {
+      yield* yieldLocal(math);
+      return;
+    }
+  }
+
+  if (isHandout) {
+    const fromHandout = handoutLocalFirst(params);
+    if (fromHandout) {
+      yield* yieldLocal(fromHandout);
+      return;
+    }
   }
 
   const providers = await getProviderList(params);
@@ -235,14 +329,16 @@ export async function* streamQuestion(params, { signal } = {}) {
     try {
       const { stream } = await tryProvider(provider, params, true);
       let gotChunk = false;
+      let full = '';
       for await (const chunk of stream) {
         assertNotAborted(signal);
         if (!chunk) continue;
         gotChunk = true;
+        full += chunk;
         yield { type: 'chunk', text: chunk };
       }
-      if (gotChunk) {
-        yield { type: 'done', mode: 'ai', provider };
+      if (gotChunk && full.trim() && !isWeakLocalAnswer(full)) {
+        yield { type: 'done', mode: isHandout ? 'handout' : 'ai', provider };
         return;
       }
     } catch (error) {
@@ -253,16 +349,16 @@ export async function* streamQuestion(params, { signal } = {}) {
 
   assertNotAborted(signal);
 
-  const offline = offlineFallback(params);
-  if (offline) {
-    yield* yieldLocal(offline);
+  // استریم شکست → پاسخ کامل غیر استریم از AI
+  const full = await askQuestion(params);
+  if (full?.answer?.trim()) {
+    yield* yieldLocal(full);
     return;
   }
 
-  const answer = await askDemo(params);
-  for await (const chunk of streamDemo(answer)) {
-    assertNotAborted(signal);
-    yield { type: 'chunk', text: chunk };
-  }
-  yield { type: 'done', mode: 'demo', provider: 'demo' };
+  yield* yieldLocal({
+    answer: 'الان نتوانستیم پاسخ کامل بسازیم. لطفاً چند ثانیه بعد دوباره «دریافت پاسخ» را بزنید.',
+    mode: 'error',
+    provider: 'none',
+  });
 }

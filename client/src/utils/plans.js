@@ -1,25 +1,25 @@
-export const GUEST_DAILY_LIMIT = Infinity;
-export const GUEST_HISTORY_LIMIT = 500;
+export const GUEST_DAILY_LIMIT = 3;
+export const GUEST_HISTORY_LIMIT = 10;
 export const MEMBER_HISTORY_LIMIT = 500;
 
 export const MEMBER_BENEFITS = [
-  'سوالات کاملاً نامحدود',
+  'سوالات نامحدود با اشتراک',
   'ذخیره تاریخچه برگه‌ها در حساب',
   'دسترسی به پروفایل و تنظیمات',
   'همگام‌سازی بین دستگاه‌ها',
 ];
 
 export const GUEST_BENEFITS = [
-  'سوالات کاملاً نامحدود',
+  `${GUEST_DAILY_LIMIT} سوال رایگان در روز`,
   'بدون نیاز به ثبت‌نام',
-  'استفاده سریع و رایگان',
+  'امتحان عکس و متن',
 ];
 
 export function getPlanInfo(user) {
   if (user) {
     return {
       plan: 'member',
-      label: 'عضو',
+      label: 'اشتراک فعال',
       dailyLimit: Infinity,
       historyLimit: MEMBER_HISTORY_LIMIT,
       unlimited: true,
@@ -28,8 +28,8 @@ export function getPlanInfo(user) {
   return {
     plan: 'guest',
     label: 'مهمان',
-    dailyLimit: Infinity,
+    dailyLimit: GUEST_DAILY_LIMIT,
     historyLimit: GUEST_HISTORY_LIMIT,
-    unlimited: true,
+    unlimited: false,
   };
 }

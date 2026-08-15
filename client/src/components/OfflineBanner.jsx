@@ -16,8 +16,7 @@ export default function OfflineBanner({ serverOnline, onRetry }) {
     <div className="relative z-20 bg-red-500/10 border-b border-red-500/20 text-red-700 dark:text-red-400 text-sm text-center py-3 px-4 backdrop-blur-sm">
       <p className="font-semibold">اتصال به سرور برقرار نیست</p>
       <p className="text-xs mt-1.5 opacity-90 max-w-md mx-auto leading-relaxed">
-        روی <strong className="text-red-800 dark:text-red-300">start.bat</strong> در پوشه پروژه دوبار کلیک کنید.
-        برای اجرای همیشگی یک‌بار <strong className="text-red-800 dark:text-red-300">install-always-on.bat</strong> را اجرا کنید.
+        لطفاً اتصال اینترنت را بررسی کنید و کمی بعد دوباره تلاش کنید.
       </p>
       {onRetry && (
         <button

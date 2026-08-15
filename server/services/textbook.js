@@ -82,18 +82,19 @@ export function searchRelevantChapters(grade, subject, queryText, limit = 4) {
     .map((ch) => ({ chapter: ch, score: scoreChapter(ch, tokens) }))
     .sort((a, b) => b.score - a.score);
 
-  const top = scored.filter((s) => s.score > 0).slice(0, limit);
-  const chapters = top.length > 0
-    ? top.map((s) => s.chapter)
-    : book.chapters.slice(0, Math.min(limit, book.chapters.length));
+  const top = scored.filter((s) => s.score >= 3).slice(0, limit);
+  // هرگز فصل بی‌ربط (امتیاز صفر) را به‌عنوان جواب کتاب برنگردان
+  const chapters = top.map((s) => ({ ...s.chapter, score: s.score }));
 
   return { book, chapters };
 }
 
 export function buildTextbookContext(grade, subject, queryText) {
+  if (!grade || !subject) return null;
+
   const { book, chapters } = searchRelevantChapters(grade, subject, queryText);
 
-  if (!book) return null;
+  if (!book || !chapters.length) return null;
 
   const gradeLabel = getGradeLabel(grade);
   const subjectLabel = getSubjectLabel(subject);
